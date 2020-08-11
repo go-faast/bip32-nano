@@ -1,55 +1,11 @@
-const jsbn = require('jsbn');
 const jsSHA = require('jssha');
 const blake = require('blakejs');
 const ed25519 = require('./ed25519.js');
+const { bi, zero, one, two } = require('./helpers.js');
 
-const BigInteger = jsbn.BigInteger;
-
-BigInteger.prototype.times = BigInteger.prototype.multiply;
-BigInteger.prototype.plus = BigInteger.prototype.add;
-BigInteger.prototype.minus = BigInteger.prototype.subtract;
-BigInteger.prototype.square = function () {
-    return this.times(this);
-};
-BigInteger.prototype.lesser = function (a) {
-    return (this.compareTo(a) < 0);
-};
-BigInteger.prototype.greater = function (a) {
-    return (this.compareTo(a) > 0);
-};
-BigInteger.prototype.equals = function (a) {
-    return (this.compareTo(a) == 0);
-};
-BigInteger.prototype.greaterOrEqualTo = function (a) {
-    return (this.compareTo(a) >= 0);
-};
-BigInteger.prototype.lesserOrEqualTo = function (a) {
-    return (this.compareTo(a) >= 0);
-};
-BigInteger.prototype.lesserThan = BigInteger.prototype.lesser;
-BigInteger.prototype.greaterThan = BigInteger.prototype.greater;
-BigInteger.prototype.equalTo = BigInteger.prototype.equals;
-
-
-// BigInteger construction done right
-function bi(s, base) {
-    if (base != undefined) {
-        if (base == 256) return bytes2bi(string2bytes(s));
-        return new BigInteger(s, base);
-    } else if (typeof s == 'string') {
-        return new BigInteger(s, 10);
-    } else if (s instanceof Array) {
-        return bytes2bi(s);
-    } else if (typeof s == 'number') {
-        return new BigInteger(s.toString(), 10);
-    } else {
-        throw "Can't convert " + s + " to BigInteger";
-    }
-}
-
-var zero = BigInteger.ZERO;
-var one = BigInteger.ONE;
-var two = bi('2');
+// Adapted from:
+// https://github.com/superdarkbit/nano-bip32-ed25519/blob/master/src/js/bip32_ed25519.js
+// With patches from the Nano team
 
 function uint8ToHex(uintValue) {
     var hex = "";
@@ -77,8 +33,6 @@ function h512(m) {
     var shaObj = new jsSHA("SHA-512", 'ARRAYBUFFER')
     shaObj.update(m.buffer)
     return new Uint8Array(shaObj.getHash('ARRAYBUFFER'))
-    //return blake.blake2b(m)
-
 }
 
 function h512_blake2b(m) {
@@ -93,8 +47,6 @@ function h256(m) {
 }
 
 function Fk(message, secret) {
-    var self = this;
-    var uToH = uint8ToHex;
     var shaObj = new jsSHA("SHA-512", "ARRAYBUFFER")
     shaObj.setHMACKey(secret.buffer, "ARRAYBUFFER")
     shaObj.update(message.buffer)
@@ -157,8 +109,6 @@ function concatenate_uint8_arrays(uint8_arrays) {
 }
 
 function private_child_key(node, i) {
-    var self = this;
-    var uToH = uint8ToHex;
     if (i.constructor != BigInteger) i = bi(i)
     if (!node)
         return null

@@ -1,9 +1,4 @@
-
-const jsbn = require('jsbn');
-const jsSHA = require('jssha');
-const blake = require('blakejs');
-
-const BigInteger = jsbn.BigInteger;
+const { bi, zero, one, two } = require('./helpers.js')
 
 //  Ed25519 - digital signatures based on curve25519
 //  Adapted from http://ed25519.cr.yp.to/python/ed25519.py by Ron Garret
@@ -52,22 +47,6 @@ function hex2bi(s) {
     return new BigInteger(s, 16);
 }
 
-// BigInteger construction done right
-function bi(s, base) {
-    if (base != undefined) {
-        if (base == 256) return bytes2bi(string2bytes(s));
-        return new BigInteger(s, base);
-    } else if (typeof s == 'string') {
-        return new BigInteger(s, 10);
-    } else if (s instanceof Array) {
-        return bytes2bi(s);
-    } else if (typeof s == 'number') {
-        return new BigInteger(s.toString(), 10);
-    } else {
-        throw "Can't convert " + s + " to BigInteger";
-    }
-}
-
 function hash(m) {
     return blake.blake2b(m)
 }
@@ -79,46 +58,6 @@ function inthash(s) {
 function stringhash(s) {
     return bytes2string(hash(s));
 }
-
-/*BigInteger.prototype.DB = dbits;
-
-// (public) true iff nth bit is set
-function bnTestBit(n) {
-    var j = Math.floor(n/this.DB);
-    if(j >= this.t) return(this.s!=0);
-    return((this[j]&(1<<(n%this.DB)))!=0);
-}*/
-
-var zero = BigInteger.ZERO;
-var one = BigInteger.ONE;
-var two = bi('2');
-
-BigInteger.prototype.times = BigInteger.prototype.multiply;
-BigInteger.prototype.plus = BigInteger.prototype.add;
-BigInteger.prototype.minus = BigInteger.prototype.subtract;
-BigInteger.prototype.square = function () {
-    return this.times(this);
-};
-BigInteger.prototype.lesser = function (a) {
-    return (this.compareTo(a) < 0);
-};
-BigInteger.prototype.greater = function (a) {
-    return (this.compareTo(a) > 0);
-};
-BigInteger.prototype.equals = function (a) {
-    return (this.compareTo(a) == 0);
-};
-BigInteger.prototype.greaterOrEqualTo = function (a) {
-    return (this.compareTo(a) >= 0);
-};
-BigInteger.prototype.lesserOrEqualTo = function (a) {
-    return (this.compareTo(a) >= 0);
-};
-BigInteger.prototype.lesserThan = BigInteger.prototype.lesser;
-BigInteger.prototype.greaterThan = BigInteger.prototype.greater;
-BigInteger.prototype.equalTo = BigInteger.prototype.equals;
-
-//BigInteger.prototype.testBit = bnTestBit;
 
 var xff = bi('255');
 var b = bi('256');
