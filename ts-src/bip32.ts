@@ -3,6 +3,7 @@ const bs58check = require('bs58check');
 const ecc = require('tiny-secp256k1');
 const typeforce = require('typeforce');
 const wif = require('wif');
+const ed25519 = require('./ed25519.js');
 
 interface Network {
   wif: number;
@@ -16,6 +17,7 @@ interface Network {
   scriptHash?: number;
 }
 
+const UINT512_TYPE = typeforce.BufferN(64);
 const UINT256_TYPE = typeforce.BufferN(32);
 const NETWORK_TYPE = typeforce.compile({
   wif: typeforce.UInt8,
@@ -25,20 +27,22 @@ const NETWORK_TYPE = typeforce.compile({
   },
 });
 
-const BITCOIN: Network = {
-  messagePrefix: '\x18Bitcoin Signed Message:\n',
-  bech32: 'bc',
+const NANO: Network = {
+  messagePrefix: '',
+  bech32: '',
   bip32: {
     public: 0x0488b21e,
     private: 0x0488ade4,
   },
-  pubKeyHash: 0x00,
-  scriptHash: 0x05,
-  wif: 0x80,
+  pubKeyHash: 0,
+  scriptHash: 0,
+  wif: 0,
 };
 
 const HIGHEST_BIT = 0x80000000;
 const UINT31_MAX = Math.pow(2, 31) - 1;
+const BASE58_PUBLIC_BYTE_COUNT = 4 + 1 + 4 + 4 + 32 + 32;
+const BASE58_PRIVATE_BYTE_COUNT = 4 + 1 + 4 + 4 + 32 + 64;
 
 function BIP32Path(value: string): boolean {
   return (
@@ -75,8 +79,9 @@ export interface BIP32Interface {
 class BIP32 implements BIP32Interface {
   lowR: boolean;
   constructor(
-    private __D: Buffer | undefined,
-    private __Q: Buffer | undefined,
+    private __kL: Buffer | undefined,
+    private __kR: Buffer | undefined,
+    private __A: Buffer | undefined,
     public chainCode: Buffer,
     public network: Network,
     private __DEPTH = 0,
@@ -100,12 +105,17 @@ class BIP32 implements BIP32Interface {
   }
 
   get publicKey(): Buffer {
-    if (this.__Q === undefined) this.__Q = ecc.pointFromScalar(this.__D, true);
-    return this.__Q!;
+    if (typeof this.__A === 'undefined') {
+      this.__A = ed25519.encodepoint(ed25519.scalarmultbase(ed25519.bytes2bi(this.__kL)));
+    }
+    return this.__A!;
   }
 
   get privateKey(): Buffer | undefined {
-    return this.__D;
+    if (this.isNeutered()) {
+      return;
+    }
+    return Buffer.concat([this.__kL!, this.__kR!]);
   }
 
   get identifier(): Buffer {
@@ -119,7 +129,7 @@ class BIP32 implements BIP32Interface {
   // Private === not neutered
   // Public === neutered
   isNeutered(): boolean {
-    return this.__D === undefined;
+    return typeof this.__kL === 'undefined' || typeof this.__kR === 'undefined';
   }
 
   neutered(): BIP32Interface {
@@ -138,7 +148,9 @@ class BIP32 implements BIP32Interface {
     const version = !this.isNeutered()
       ? network.bip32.private
       : network.bip32.public;
-    const buffer = Buffer.allocUnsafe(78);
+    const buffer = !this.isNeutered()
+      ? Buffer.allocUnsafe(BASE58_PRIVATE_BYTE_COUNT)
+      : Buffer.allocUnsafe(BASE58_PUBLIC_BYTE_COUNT);
 
     // 4 bytes: version bytes
     buffer.writeUInt32BE(version, 0);
@@ -156,15 +168,12 @@ class BIP32 implements BIP32Interface {
     // 32 bytes: the chain code
     this.chainCode.copy(buffer, 13);
 
-    // 33 bytes: the public key or private key data
+    // 64 bytes: the public key (32 bytes) or extended private key data (64 bytes)
     if (!this.isNeutered()) {
-      // 0x00 + k for private keys
-      buffer.writeUInt8(0, 45);
-      this.privateKey!.copy(buffer, 46);
+      this.privateKey!.copy(buffer, 45);
 
-      // 33 bytes: the public key
     } else {
-      // X9.62 encoding for public keys
+      // 32 bytes: the public key
       this.publicKey.copy(buffer, 45);
     }
 
@@ -172,8 +181,7 @@ class BIP32 implements BIP32Interface {
   }
 
   toWIF(): string {
-    if (!this.privateKey) throw new TypeError('Missing private key');
-    return wif.encode(this.network.wif, this.privateKey, true);
+    throw new Error('toWIF not supported for bip32 ed25519')
   }
 
   // https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki#child-key-derivation-ckd-functions
@@ -311,8 +319,10 @@ export function fromBase58(
   network?: Network,
 ): BIP32Interface {
   const buffer = bs58check.decode(inString);
-  if (buffer.length !== 78) throw new TypeError('Invalid buffer length');
-  network = network || BITCOIN;
+  if (buffer.length !== BASE58_PRIVATE_BYTE_COUNT || buffer.length !== BASE58_PUBLIC_BYTE_COUNT) {
+    throw new TypeError('Invalid buffer length');
+  }
+  network = network || NANO;
 
   // 4 bytes: version bytes
   const version = buffer.readUInt32BE(0);
@@ -340,12 +350,12 @@ export function fromBase58(
 
   // 33 bytes: private key data (0x00 + k)
   if (version === network.bip32.private) {
-    if (buffer.readUInt8(45) !== 0x00)
-      throw new TypeError('Invalid private key');
-    const k = buffer.slice(46, 78);
+    if (buffer.length !== BASE58_PRIVATE_BYTE_COUNT)
+      throw new TypeError('Invalid private key length');
+    const K = buffer.slice(45, 109);
 
     hd = fromPrivateKeyLocal(
-      k,
+      K,
       chainCode,
       network,
       depth,
@@ -355,6 +365,8 @@ export function fromBase58(
 
     // 33 bytes: public key data (0x02 + X or 0x03 + X)
   } else {
+    if (buffer.length !== BASE58_PUBLIC_BYTE_COUNT)
+      throw new TypeError('Invalid public key length');
     const X = buffer.slice(45, 78);
 
     hd = fromPublicKeyLocal(
@@ -388,17 +400,16 @@ function fromPrivateKeyLocal(
 ): BIP32Interface {
   typeforce(
     {
-      privateKey: UINT256_TYPE,
+      privateKey: UINT512_TYPE,
       chainCode: UINT256_TYPE,
     },
     { privateKey, chainCode },
   );
-  network = network || BITCOIN;
+  network = network || NANO;
 
-  if (!ecc.isPrivate(privateKey))
-    throw new TypeError('Private key not in range [1, n)');
   return new BIP32(
-    privateKey,
+    privateKey.slice(0, 32),
+    privateKey.slice(32),
     undefined,
     chainCode,
     network,
@@ -426,16 +437,17 @@ function fromPublicKeyLocal(
 ): BIP32Interface {
   typeforce(
     {
-      publicKey: typeforce.BufferN(33),
+      publicKey: UINT256_TYPE,
       chainCode: UINT256_TYPE,
     },
     { publicKey, chainCode },
   );
-  network = network || BITCOIN;
+  network = network || NANO;
 
   // verify the X coordinate is a point on the curve
-  if (!ecc.isPoint(publicKey)) throw new TypeError('Point is not on the curve');
+  ed25519.decodepoint(publicKey);
   return new BIP32(
+    undefined,
     undefined,
     publicKey,
     chainCode,
@@ -450,9 +462,9 @@ export function fromSeed(seed: Buffer, network?: Network): BIP32Interface {
   typeforce(typeforce.Buffer, seed);
   if (seed.length < 16) throw new TypeError('Seed should be at least 128 bits');
   if (seed.length > 64) throw new TypeError('Seed should be at most 512 bits');
-  network = network || BITCOIN;
+  network = network || NANO;
 
-  const I = crypto.hmacSHA512(Buffer.from('Bitcoin seed', 'utf8'), seed);
+  const I = crypto.hmacSHA512(Buffer.from('Nano seed', 'utf8'), seed);
   const IL = I.slice(0, 32);
   const IR = I.slice(32);
 
