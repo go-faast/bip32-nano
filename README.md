@@ -8,8 +8,12 @@ The following are intentional deviations or incompatabilities:
 
 - `BIP32Interface.toWIF` is not supported because Nano does not use WIF for private keys
 - xprv's are 109 bytes instead of the standard 78 bytes in order to include the full 512 bit private key that is needed for BIP32-ED25519
-- xpub'b are 77 bytes instead of the standard 78 bytes because byte 45 is no longer needed to indicate whether the public key is compressed. ED25519 public keys are always compressed.
+- xpub's are 77 bytes instead of the standard 78 bytes because byte 45 is no longer needed to indicate whether the public key is compressed. ED25519 public keys are always compressed.
 - BIP32-ED25519 requires a master secret such that it's SHA512 hash has the third highest bit of the first 32 bytes unset. In order to be compatible with all existing seeds, a conforming master secret is discovered by iterating over 32 bit integers `i` starting from 0 until `SHA512(i, seed)` meets the requirements.
+
+## TODO
+- Update tests
+- Change bip32 public/private version number
 
 ## Example
 
