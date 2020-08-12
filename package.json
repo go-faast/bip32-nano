@@ -49,6 +49,7 @@
     "wif": "^2.0.6"
   },
   "devDependencies": {
+    "@types/jsbn": "^1.2.29",
     "nyc": "^15.0.0",
     "prettier": "1.16.4",
     "tape": "^4.13.2",

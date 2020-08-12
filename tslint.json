@@ -28,7 +28,8 @@
       "check-format",
       "allow-leading-underscore",
       "allow-pascal-case"
-    ]
+    ],
+    "prefer-const": false
   },
   "rulesDirectory": []
 }
