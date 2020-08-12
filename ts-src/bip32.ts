@@ -1,9 +1,10 @@
 import * as crypto from './crypto';
 const bs58check = require('bs58check');
-const ecc = require('tiny-secp256k1');
 const typeforce = require('typeforce');
-const wif = require('wif');
-const ed25519 = require('./ed25519.js');
+
+import * as bip32ed25519 from './bip32_ed25519';
+import * as ed25519 from './ed25519';
+import { bytes2bi } from './helpers';
 
 interface Network {
   wif: number;
@@ -76,11 +77,11 @@ export interface BIP32Interface {
   verify(hash: Buffer, signature: Buffer): boolean;
 }
 
-class BIP32 implements BIP32Interface {
+class BIP32Nano implements BIP32Interface {
   lowR: boolean;
   constructor(
-    private __kL: Buffer | undefined,
-    private __kR: Buffer | undefined,
+    private __KL: Buffer | undefined,
+    private __KR: Buffer | undefined,
     private __A: Buffer | undefined,
     public chainCode: Buffer,
     public network: Network,
@@ -106,7 +107,7 @@ class BIP32 implements BIP32Interface {
 
   get publicKey(): Buffer {
     if (typeof this.__A === 'undefined') {
-      this.__A = ed25519.encodepoint(ed25519.scalarmultbase(ed25519.bytes2bi(this.__kL)));
+      this.__A = Buffer.from(ed25519.encodepoint(ed25519.scalarmultbase(bytes2bi(this.__KL!))));
     }
     return this.__A!;
   }
@@ -115,7 +116,7 @@ class BIP32 implements BIP32Interface {
     if (this.isNeutered()) {
       return;
     }
-    return Buffer.concat([this.__kL!, this.__kR!]);
+    return Buffer.concat([this.__KL!, this.__KR!]);
   }
 
   get identifier(): Buffer {
@@ -129,7 +130,7 @@ class BIP32 implements BIP32Interface {
   // Private === not neutered
   // Public === neutered
   isNeutered(): boolean {
-    return typeof this.__kL === 'undefined' || typeof this.__kR === 'undefined';
+    return typeof this.__KL === 'undefined' || typeof this.__KR === 'undefined';
   }
 
   neutered(): BIP32Interface {
@@ -181,71 +182,50 @@ class BIP32 implements BIP32Interface {
   }
 
   toWIF(): string {
-    throw new Error('toWIF not supported for bip32 ed25519')
+    throw new Error('toWIF not supported for bip32 ed25519');
   }
 
-  // https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki#child-key-derivation-ckd-functions
   derive(index: number): BIP32Interface {
     typeforce(typeforce.UInt32, index);
 
     const isHardened = index >= HIGHEST_BIT;
-    const data = Buffer.allocUnsafe(37);
 
     // Hardened child
-    if (isHardened) {
-      if (this.isNeutered())
-        throw new TypeError('Missing private key for hardened child key');
-
-      // data = 0x00 || ser256(kpar) || ser32(index)
-      data[0] = 0x00;
-      this.privateKey!.copy(data, 1);
-      data.writeUInt32BE(index, 33);
-
-      // Normal child
-    } else {
-      // data = serP(point(kpar)) || ser32(index)
-      //      = serP(Kpar) || ser32(index)
-      this.publicKey.copy(data, 0);
-      data.writeUInt32BE(index, 33);
+    if (isHardened && this.isNeutered()) {
+      throw new TypeError('Missing private key for hardened child key');
     }
-
-    const I = crypto.hmacSHA512(this.chainCode, data);
-    const IL = I.slice(0, 32);
-    const IR = I.slice(32);
-
-    // if parse256(IL) >= n, proceed with the next value for i
-    if (!ecc.isPrivate(IL)) return this.derive(index + 1);
 
     // Private parent key -> private child key
     let hd: BIP32Interface;
     if (!this.isNeutered()) {
-      // ki = parse256(IL) + kpar (mod n)
-      const ki = ecc.privateAdd(this.privateKey, IL);
+      const [[kL, kR], publicKey, chainCode] = bip32ed25519.private_child_key(
+        [[this.__KL!, this.__KR!], this.publicKey, this.chainCode],
+        index,
+      );
 
-      // In case ki == 0, proceed with the next value for i
-      if (ki == null) return this.derive(index + 1);
-
-      hd = fromPrivateKeyLocal(
-        ki,
-        IR,
+      hd = new BIP32Nano(
+        Buffer.from(kL),
+        Buffer.from(kR),
+        Buffer.from(publicKey),
+        Buffer.from(chainCode),
         this.network,
         this.depth + 1,
         index,
         this.fingerprint.readUInt32BE(0),
       );
 
-      // Public parent key -> public child key
     } else {
-      // Ki = point(parse256(IL)) + Kpar
-      //    = G*IL + Kpar
-      const Ki = ecc.pointAddScalar(this.publicKey, IL, true);
+      // Public parent key -> public child key
+      const [publicKey, chainCode] = bip32ed25519.safe_public_child_key(
+        [this.publicKey, this.chainCode],
+        index,
+      );
 
-      // In case Ki is the point at infinity, proceed with the next value for i
-      if (Ki === null) return this.derive(index + 1);
-
-      hd = fromPublicKeyLocal(
-        Ki,
-        IR,
+      hd = new BIP32Nano(
+        undefined,
+        undefined,
+        Buffer.from(publicKey),
+        Buffer.from(chainCode),
         this.network,
         this.depth + 1,
         index,
@@ -289,28 +269,13 @@ class BIP32 implements BIP32Interface {
     );
   }
 
-  sign(hash: Buffer, lowR?: boolean): Buffer {
+  sign(hash: Buffer): Buffer {
     if (!this.privateKey) throw new Error('Missing private key');
-    if (lowR === undefined) lowR = this.lowR;
-    if (lowR === false) {
-      return ecc.sign(hash, this.privateKey);
-    } else {
-      let sig = ecc.sign(hash, this.privateKey);
-      const extraData = Buffer.alloc(32, 0);
-      let counter = 0;
-      // if first try is lowR, skip the loop
-      // for second try and on, add extra entropy counting up
-      while (sig[0] > 0x7f) {
-        counter++;
-        extraData.writeUIntLE(counter, 0, 6);
-        sig = ecc.signWithEntropy(hash, this.privateKey, extraData);
-      }
-      return sig;
-    }
+    return Buffer.from(bip32ed25519.special_signing(this.__KL!, this.__KR!, this.publicKey, hash));
   }
 
   verify(hash: Buffer, signature: Buffer): boolean {
-    return ecc.verify(hash, this.publicKey, signature);
+    return ed25519.checksig(signature, hash, this.publicKey);
   }
 }
 
@@ -407,7 +372,7 @@ function fromPrivateKeyLocal(
   );
   network = network || NANO;
 
-  return new BIP32(
+  return new BIP32Nano(
     privateKey.slice(0, 32),
     privateKey.slice(32),
     undefined,
@@ -446,7 +411,7 @@ function fromPublicKeyLocal(
 
   // verify the X coordinate is a point on the curve
   ed25519.decodepoint(publicKey);
-  return new BIP32(
+  return new BIP32Nano(
     undefined,
     undefined,
     publicKey,
@@ -464,9 +429,14 @@ export function fromSeed(seed: Buffer, network?: Network): BIP32Interface {
   if (seed.length > 64) throw new TypeError('Seed should be at most 512 bits');
   network = network || NANO;
 
-  const I = crypto.hmacSHA512(Buffer.from('Nano seed', 'utf8'), seed);
-  const IL = I.slice(0, 32);
-  const IR = I.slice(32);
+  const masterSecret = bip32ed25519.seed_to_master_secret(seed);
+  const [[KL, KR], publicKey, chainCode] = bip32ed25519.root_key(masterSecret);
 
-  return fromPrivateKey(IL, IR, network);
+  return new BIP32Nano(
+    Buffer.from(KL),
+    Buffer.from(KR),
+    Buffer.from(publicKey),
+    Buffer.from(chainCode),
+    network,
+  );
 }
